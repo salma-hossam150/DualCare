@@ -1,0 +1,308 @@
+"""DualCare — Maternal & Fetal Health Monitoring Platform.
+
+Entry point.  Sets up the Flet application shell, theme, bottom
+navigation, and the periodic data-refresh loop.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import flet as ft
+
+from config import (
+    APP_SETTINGS,
+    Colors,
+    FETAL_DATA,
+    HEART_RATE,
+    NAV_ENTRIES,
+    NOTIFICATION_QUEUE,
+    POLL_INTERVAL_SECONDS,
+    RISK,
+    SPO2,
+    TEMPERATURE,
+    USER_PROFILE,
+    apply_payload,
+    db,
+    fetch_firebase_payload,
+)
+from models import Alert, NavEntry
+
+
+# =====================================================================
+# Notification toast
+# =====================================================================
+
+_SEVERITY_BG = {
+    "info":     Colors.INFO,
+    "warning":  Colors.WARNING,
+    "critical": Colors.DANGER,
+}
+_SEVERITY_ICON = {
+    "info":     ft.Icons.INFO_OUTLINE,
+    "warning":  ft.Icons.WARNING_AMBER_ROUNDED,
+    "critical": ft.Icons.EMERGENCY_ROUNDED,
+}
+
+
+def _build_toast(alert: Alert, on_dismiss) -> ft.Container:
+    bg = _SEVERITY_BG.get(alert.severity, Colors.WARNING)
+    icon = _SEVERITY_ICON.get(alert.severity, ft.Icons.WARNING_AMBER_ROUNDED)
+    return ft.Container(
+        animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_IN_OUT),
+        opacity=1,
+        margin=ft.Margin(12, 6, 12, 0),
+        border_radius=14,
+        bgcolor=bg,
+        padding=ft.Padding(14, 10, 8, 10),
+        shadow=ft.BoxShadow(blur_radius=12, color=ft.Colors.with_opacity(0.25, ft.Colors.BLACK)),
+        content=ft.Row(
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(icon, color=ft.Colors.WHITE, size=22),
+                ft.Column(
+                    expand=True, spacing=2,
+                    controls=[
+                        ft.Text(alert.title, size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        ft.Text(
+                            alert.recommendation[:80] + ("…" if len(alert.recommendation) > 80 else ""),
+                            size=11,
+                            color=ft.Colors.with_opacity(0.92, ft.Colors.WHITE),
+                        ),
+                    ],
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE, icon_color=ft.Colors.WHITE,
+                    icon_size=18, on_click=on_dismiss,
+                ),
+            ],
+        ),
+    )
+
+
+# =====================================================================
+# Main
+# =====================================================================
+
+def main(page: ft.Page) -> None:
+    page.title = "DualCare"
+    page.padding = 0
+    page.bgcolor = Colors.BG
+
+    # --- Theme ---
+    _apply_theme(page, APP_SETTINGS.dark_mode)
+
+    # --- State ---
+    current_route: list[str] = [NAV_ENTRIES[0].route]
+    showing_settings: list[bool] = [False]
+
+    # --- Lazy view imports (after all foundation modules are ready) ---
+    from views.home import build_home_view
+    from views.baby import build_baby_view
+    from views.mother import build_mother_view
+    from views.alerts_view import build_alerts_view
+    from views.care import build_care_view
+    from views.settings import build_settings_view
+
+    VIEW_BUILDERS: dict[str, object] = {
+        "/home":   build_home_view,
+        "/baby":   build_baby_view,
+        "/mother": build_mother_view,
+        "/alerts": build_alerts_view,
+        "/care":   build_care_view,
+    }
+
+    # --- Notification toasts ---
+    toast_column = ft.Column(spacing=0, controls=[])
+
+    def dismiss_toast(e, banner):
+        if banner in toast_column.controls:
+            toast_column.controls.remove(banner)
+            page.update()
+
+    def show_toast(alert: Alert):
+        banner = _build_toast(alert, lambda e: dismiss_toast(e, banner))
+        toast_column.controls.append(banner)
+
+        async def auto_dismiss():
+            await asyncio.sleep(6)
+            if banner in toast_column.controls:
+                toast_column.controls.remove(banner)
+                page.update()
+
+        page.run_task(auto_dismiss)
+        page.update()
+
+    # --- Content area ---
+    content_area = ft.Container(expand=True)
+
+    def navigate(route: str) -> None:
+        current_route[0] = route
+        showing_settings[0] = False
+        builder = VIEW_BUILDERS.get(route)
+        if builder:
+            if route == "/alerts":
+                content_area.content = builder(on_dismiss=lambda: navigate("/alerts"))
+            else:
+                content_area.content = builder()
+        page.update()
+
+    def open_settings(e=None) -> None:
+        showing_settings[0] = True
+
+        def on_save():
+            # Reload theme in case dark-mode toggled
+            _apply_theme(page, APP_SETTINGS.dark_mode)
+            page.update()
+
+        content_area.content = build_settings_view(page, on_save)
+        # Deselect nav buttons
+        for b in icon_buttons:
+            b.selected = False
+        page.update()
+
+    # --- Periodic data refresh ---
+    async def refresh_loop():
+        while True:
+            try:
+                payload = fetch_firebase_payload()
+                if apply_payload(payload):
+                    if not showing_settings[0]:
+                        navigate(current_route[0])
+                    # Drain notification queue
+                    while NOTIFICATION_QUEUE:
+                        alert = NOTIFICATION_QUEUE.pop(0)
+                        if APP_SETTINGS.notifications_enabled:
+                            show_toast(alert)
+            except Exception:
+                pass
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+    # --- Bottom navigation ---
+    icon_buttons: list[ft.IconButton] = []
+
+    def make_nav_col(entry: NavEntry, idx: int) -> ft.Column:
+        btn = ft.IconButton(
+            icon=entry.icon_outline,
+            selected_icon=entry.icon,
+            icon_size=26,
+            selected=False,
+            style=ft.ButtonStyle(
+                icon_color={
+                    ft.ControlState.SELECTED: Colors.TEAL,
+                    ft.ControlState.DEFAULT: Colors.TEXT_SECONDARY,
+                },
+            ),
+        )
+        icon_buttons.append(btn)
+
+        def on_click(_):
+            for i, b in enumerate(icon_buttons):
+                b.selected = i == idx
+            navigate(entry.route)
+
+        btn.on_click = on_click
+
+        return ft.Column(
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=2,
+            controls=[
+                btn,
+                ft.Text(
+                    entry.title, size=10,
+                    color=Colors.TEXT_SECONDARY,
+                    weight=ft.FontWeight.W_500,
+                ),
+            ],
+        )
+
+    nav_cols = [make_nav_col(e, i) for i, e in enumerate(NAV_ENTRIES)]
+
+    page.bottom_appbar = ft.BottomAppBar(
+        bgcolor=Colors.CARD,
+        elevation=8,
+        height=65,
+        shadow_color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK),
+        padding=ft.Padding(0, 4, 0, 4),
+        content=ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_AROUND,
+            controls=nav_cols,
+        ),
+    )
+
+    # --- App bar ---
+    page.appbar = ft.AppBar(
+        title=ft.Row(
+            spacing=8,
+            controls=[
+                ft.Icon(ft.Icons.MONITOR_HEART_OUTLINED, color=Colors.TEAL, size=26),
+                ft.Text(
+                    "DualCare",
+                    size=20,
+                    weight=ft.FontWeight.W_700,
+                    color=Colors.TEXT_PRIMARY,
+                ),
+            ],
+        ),
+        center_title=False,
+        bgcolor=Colors.CARD,
+        elevation=0,
+        actions=[
+            ft.IconButton(
+                icon=ft.Icons.SETTINGS_OUTLINED,
+                icon_color=Colors.TEXT_SECONDARY,
+                icon_size=24,
+                tooltip="Settings",
+                on_click=open_settings,
+            ),
+        ],
+    )
+
+    # --- Assemble ---
+    page.add(
+        ft.Column(
+            expand=True,
+            spacing=0,
+            controls=[toast_column, content_area],
+        )
+    )
+
+    # Initial navigation
+    navigate(NAV_ENTRIES[0].route)
+    icon_buttons[0].selected = True
+    page.run_task(refresh_loop)
+    page.update()
+
+
+# =====================================================================
+# Theme helper
+# =====================================================================
+
+def _apply_theme(page: ft.Page, dark: bool) -> None:
+    if dark:
+        page.theme_mode = ft.ThemeMode.DARK
+        page.theme = ft.Theme(
+            color_scheme=ft.ColorScheme(
+                primary=Colors.TEAL,
+                on_primary="#FFFFFF",
+                secondary=Colors.LAVENDER,
+                tertiary=Colors.PINK,
+            ),
+        )
+    else:
+        page.theme_mode = ft.ThemeMode.LIGHT
+        page.theme = ft.Theme(
+            color_scheme=ft.ColorScheme(
+                primary=Colors.TEAL,
+                on_primary="#FFFFFF",
+                secondary=Colors.LAVENDER,
+                tertiary=Colors.PINK,
+                surface=Colors.CARD,
+                on_surface=Colors.TEXT_PRIMARY,
+            ),
+        )
+
+
+# =====================================================================
+if __name__ == "__main__":
+    ft.run(main)
