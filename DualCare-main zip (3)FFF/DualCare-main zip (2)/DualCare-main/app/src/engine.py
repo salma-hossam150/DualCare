@@ -45,7 +45,7 @@ NAV_ENTRIES: list[NavEntry] = [
 # ---------------------------------------------------------------------------
 FIREBASE_DB_URL = os.getenv(
     "DUALCARE_FIREBASE_DB_URL",
-    "https://dualcare-8b27c-default-rtdb.firebaseio.com",
+    "https://dualcare2-88208-default-rtdb.europe-west1.firebasedatabase.app/",
 )
 FIREBASE_DB_SECRET = os.getenv(
     "DUALCARE_FIREBASE_DB_SECRET", "",
