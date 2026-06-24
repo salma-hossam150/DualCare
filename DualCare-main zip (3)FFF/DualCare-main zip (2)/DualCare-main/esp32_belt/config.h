@@ -8,11 +8,11 @@ inline constexpr unsigned long SENSOR_READ_INTERVAL_MS = 2000;  // Firebase push
 // ──────────────────────────────────────────────
 //  Firebase Realtime Database
 // ──────────────────────────────────────────────
-inline const char* DB_URL               = "https://dualcare-8b27c-default-rtdb.firebaseio.com/";
+// ──────────────────────────────────────────────
+inline const char* DB_URL              = "https://dualcare2-88208-default-rtdb.europe-west1.firebasedatabase.app/";
 inline const char* DB_SENSORS_PATH      = "/sensors/belt";
 inline const char* DB_ALERT_EVENTS_PATH = "/alert_events";
 inline const char* FIREBASE_AUTH_TOKEN = "ZO7HvLMG0UlIsbseouBL65AyEVlPRaKWtuTd4Q8Q";
-
 // ---------------------------------------------------------------------------
 //  WiFi credentials
 // ---------------------------------------------------------------------------
